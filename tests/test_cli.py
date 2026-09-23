@@ -65,12 +65,12 @@ def test_goal_with_stub_writes_to_db(tmp_osa_home) -> None:
 
 
 def test_status_empty(tmp_osa_home) -> None:
-    """osa status без целей говорит 'No goals yet'."""
+    """osa status без целей показывает daemon status и не падает."""
     runner.invoke(app, ["init"])
 
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0
-    assert "No goals yet" in result.stdout
+    assert "Daemon: not running" in result.stdout
 
 
 def test_status_shows_goals(tmp_osa_home) -> None:

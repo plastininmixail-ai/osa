@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Optional
 
 import typer
 
 from osa import __version__
+
+# Загрузка .env из текущей директории при импорте CLI
+# (нужно для подхвата OSA_LLM__API_KEY и других секретов)
+_CLAVE_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+if _CLAVE_ENV_PATH.exists():
+    for line in _CLAVE_ENV_PATH.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        # Не перезаписываем уже установленные переменные
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 app = typer.Typer(
     name="osa",
@@ -29,6 +48,14 @@ def main(
     ),
 ) -> None:
     """O.S.A. CLI."""
+
+
+@app.command(hidden=True)
+def daemon_run() -> None:
+    """Внутренняя команда — запускает демон. Не для пользователей."""
+    from osa.runtime.daemon import run_forever
+
+    run_forever()
 
 
 @app.command()
@@ -149,26 +176,82 @@ def goal(
 
 
 @app.command()
-def status() -> None:
-    """Показать последние цели."""
-    from osa.db import connect
+def start() -> None:
+    """Запустить демон в фоне."""
+    from osa.runtime.daemon import is_running, start
 
+    running, existing_pid = is_running()
+    if running:
+        typer.echo(f"OSA уже запущен (pid={existing_pid})")
+        raise typer.Exit(1)
+
+    pid = start()
+    typer.echo(f"OSA daemon started (pid={pid})")
+    typer.echo("Логи: osa logs --follow")
+
+
+@app.command()
+def stop() -> None:
+    """Остановить демон (graceful)."""
+    from osa.runtime.daemon import is_running, stop
+
+    running, existing_pid = is_running()
+    if not running:
+        typer.echo("OSA не запущен")
+        return
+
+    typer.echo(f"Останавливаю демон (pid={existing_pid})...")
+    ok = stop()
+    if ok:
+        typer.echo("Остановлен")
+    else:
+        typer.echo("Остановлен через SIGKILL (не отвечал)")
+
+
+@app.command()
+def status() -> None:
+    """Показать состояние демона и последние цели."""
+    import sqlite3
+
+    from osa.db import connect
+    from osa.runtime.daemon import is_running
+
+    # Daemon status
     conn = connect()
+    daemon = conn.execute(
+        "SELECT * FROM daemon_state WHERE id=1"
+    ).fetchone()
+    running, pid = is_running()
+
+    if daemon and daemon["status"] != "stopped":
+        uptime = ""
+        if daemon["started_at"]:
+            started = daemon["started_at"]
+            typer.echo(
+                f"Daemon: pid={daemon['pid']}, status={daemon['status']}, "
+                f"started={started}, heartbeat={daemon['last_heartbeat']}"
+            )
+        else:
+            typer.echo(f"Daemon: pid={daemon['pid']}, status={daemon['status']}")
+    elif running:
+        typer.echo(f"Daemon: running pid={pid}")
+    else:
+        typer.echo("Daemon: not running")
+
+    # Goals
     goals = conn.execute(
         "SELECT id, description, status, created_at, finished_at "
         "FROM goals ORDER BY id DESC LIMIT 10"
     ).fetchall()
     conn.close()
 
-    if not goals:
-        typer.echo("No goals yet")
-        return
-
-    typer.echo(f"{'ID':<6} {'Status':<10} {'Created':<20} Description")
-    typer.echo("-" * 80)
-    for g in goals:
-        desc = g["description"][:50] + ("..." if len(g["description"]) > 50 else "")
-        typer.echo(f"{g['id']:<6} {g['status']:<10} {g['created_at']:<20} {desc}")
+    if goals:
+        typer.echo("")
+        typer.echo(f"{'ID':<6} {'Status':<10} {'Created':<20} Description")
+        typer.echo("-" * 80)
+        for g in goals:
+            desc = g["description"][:50] + ("..." if len(g["description"]) > 50 else "")
+            typer.echo(f"{g['id']:<6} {g['status']:<10} {g['created_at']:<20} {desc}")
 
 
 @app.command()
