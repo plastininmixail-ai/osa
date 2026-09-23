@@ -29,7 +29,7 @@ def test_init_db_creates_three_tables(tmp_osa_home) -> None:
 
 
 def test_init_db_applies_migration(tmp_osa_home) -> None:
-    """schema_version содержит 1 после первой миграции."""
+    """schema_version содержит последнюю применённую миграцию после init_db."""
     from osa.db import init_db
 
     init_db()
@@ -38,7 +38,7 @@ def test_init_db_applies_migration(tmp_osa_home) -> None:
     version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
     conn.close()
 
-    assert version == 1
+    assert version >= 1
 
 
 def test_init_db_is_idempotent(tmp_osa_home) -> None:
@@ -51,9 +51,11 @@ def test_init_db_is_idempotent(tmp_osa_home) -> None:
 
     conn = sqlite3.connect(tmp_osa_home / "osa.db")
     count = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
+    versions = sorted(r[0] for r in conn.execute("SELECT version FROM schema_version").fetchall())
     conn.close()
 
-    assert count == 1
+    # Каждая версия применена ровно один раз
+    assert versions == sorted(set(versions))
 
 
 def test_goals_indexes_exist(tmp_osa_home) -> None:

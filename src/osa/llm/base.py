@@ -1,13 +1,13 @@
-"""Абстракция LLM-провайдера.
-
-Заглушка для CLI-скелета. Полная реализация — в M0.5.
-"""
+"""Абстракция LLM-провайдера с поддержкой tool calling."""
 
 from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
+
+from osa.llm.tool_calls import ToolCallRequest
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,10 @@ class LLMMessage:
     role: str
     content: str
     name: str | None = None
+    # Tool message: results of tool execution
+    tool_call_id: str | None = None
+    # Assistant message: tool calls requested by model
+    tool_calls: list[ToolCallRequest] | None = None
 
 
 @dataclass(frozen=True)
@@ -23,7 +27,18 @@ class LLMResponse:
     tokens_used: int
     model: str
     reasoning: str | None = None
+    tool_calls: list[ToolCallRequest] | None = None
+    finish_reason: str = "stop"  # "stop" | "tool_calls" | "length"
     raw: dict | None = None
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """Описание инструмента для передачи в LLM (OpenAI format)."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]  # JSON Schema
 
 
 class LLMProvider(ABC):
@@ -34,12 +49,13 @@ class LLMProvider(ABC):
         *,
         temperature: float = 0.7,
         max_tokens: int = 1024,
+        tools: list[ToolSpec] | None = None,
     ) -> LLMResponse:
-        """Сделать один вызов LLM."""
+        """Сделать один вызов LLM. Может вернуть tool_calls."""
 
 
 def resolve_api_key(config_value: str | None) -> str:
-    """Получить API-ключ из конфига или env."""
+    """Получить API-ключ: сначала config, потом env."""
     return (
         config_value
         or os.environ.get("OSA_LLM__API_KEY")

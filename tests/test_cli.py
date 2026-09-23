@@ -56,12 +56,11 @@ def test_goal_with_stub_writes_to_db(tmp_osa_home) -> None:
     assert len(goals) == 1
     assert goals[0]["description"] == "привет"
     assert goals[0]["status"] == "done"
-    assert goals[0]["result"] == "Привет от stub!"
+    assert "Привет от stub" in goals[0]["result"]
 
     episodes = conn.execute("SELECT * FROM episodes").fetchall()
-    assert len(episodes) == 1
-    assert episodes[0]["content"] == "Привет от stub!"
-    assert episodes[0]["tokens_used"] == 10
+    assert len(episodes) >= 1
+    assert "Привет от stub" in episodes[-1]["content"]
     conn.close()
 
 

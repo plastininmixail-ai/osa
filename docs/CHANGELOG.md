@@ -77,7 +77,18 @@
 
 ### Статус
 
-**M0 план скорректирован и готов к старту разработки.** См. `M0_PLAN_DETAILED.md`.
+**M0 завершён 23.09.2026**. Все 7 шагов (M0.1–M0.7) выполнены:
+- Репо инициализировано, MIT license, CI на GitHub Actions
+- Структура `src/osa/`, CLI на typer (init, goal, status, logs)
+- TOML-конфиг через pydantic + tomlkit, env overrides
+- SQLite с 3 таблицами (goals, episodes, schema_version) + миграции
+- LLM-провайдеры: StubProvider + OpenAICompatClient + MinimaxClient (реальный API)
+- Stdlib logging с JSON-файлом + цветной stderr
+- 27/27 тестов зелёные, coverage ядра 79%
+
+**Первый коммит**: `243877c M0: каркас OSA — hello-world с Minimax M3`. Пушнут на https://github.com/plastininmixail-ai/osa.
+
+**Следующий этап**: M1a — Базовый runtime (демон + ReAct loop + 5 инструментов).
 
 ### Закрытые вопросы M0 (зафиксировано 23.09.2026)
 

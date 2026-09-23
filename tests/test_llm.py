@@ -6,10 +6,10 @@ from osa.llm.base import LLMMessage
 
 
 def test_stub_provider_returns_configured_text() -> None:
-    """Stub возвращает заранее заданный текст."""
+    """Stub возвращает заранее заданный текст (без scenario)."""
     from osa.llm.stub import StubProvider
 
-    provider = StubProvider(response_text="hello back", tokens=42)
+    provider = StubProvider(default_response_text="hello back", tokens=42)
     messages = [LLMMessage(role="user", content="hi")]
     response = provider.complete(messages)
 

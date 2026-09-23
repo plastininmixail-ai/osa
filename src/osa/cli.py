@@ -1,11 +1,4 @@
-"""CLI интерфейс O.S.A.
-
-Команды на M0 (4 штуки):
-    osa init   — инициализировать OSA_HOME
-    osa goal   — поставить цель (синхронно, через LLM)
-    osa status — показать последние цели
-    osa logs   — показать логи
-"""
+"""CLI интерфейс O.S.A."""
 
 from __future__ import annotations
 
@@ -64,11 +57,19 @@ def init() -> None:
 
 
 @app.command()
-def goal(text: str = typer.Argument(..., help="Текст цели")) -> None:
+def goal(
+    text: str = typer.Argument(..., help="Текст цели"),
+    auto_approve: bool = typer.Option(
+        False, "--yes", "-y", help="Автоматически подтверждать опасные инструменты"
+    ),
+) -> None:
     """Поставить цель агенту (синхронно, ждёт первый ответ)."""
     from osa.config import load_config
     from osa.db import connect, get_provider_for_goal
     from osa.logging_setup import configure_logging, get_logger
+    from osa.runtime.react import ReactConfig, ReactLoop
+    from osa.tools import builtin as builtin_tools
+    from osa.tools import registry as tool_registry
 
     config = load_config()
     configure_logging(
@@ -77,9 +78,15 @@ def goal(text: str = typer.Argument(..., help="Текст цели")) -> None:
     )
     log = get_logger("osa.cli")
 
-    provider = get_provider_for_goal(config)
+    # Зарегистрировать встроенные инструменты
+    tool_registry.reset()
+    builtin_tools.register_all()
 
-    log.info("goal_started", extra={"text": text, "provider": config.llm.provider})
+    provider = get_provider_for_goal(config)
+    log.info(
+        "goal_started",
+        extra={"text": text, "provider": config.llm.provider, "auto_approve": auto_approve},
+    )
 
     conn = connect()
     cur = conn.execute(
@@ -90,16 +97,12 @@ def goal(text: str = typer.Argument(..., help="Текст цели")) -> None:
     conn.commit()
 
     try:
-        from osa.llm.base import LLMMessage
-
-        messages = [
-            LLMMessage(
-                role="system",
-                content="Ты — Урс, автономный агент OSA. Отвечай кратко и по делу.",
-            ),
-            LLMMessage(role="user", content=text),
-        ]
-        response = provider.complete(messages)
+        loop = ReactLoop(
+            provider=provider,
+            tools=tool_registry.all_tools(),
+            config=ReactConfig(auto_approve=auto_approve),
+        )
+        result = loop.run(text)
     except Exception as e:
         log.error("goal_failed", extra={"error": str(e)}, exc_info=True)
         conn.execute(
@@ -112,21 +115,37 @@ def goal(text: str = typer.Argument(..., help="Текст цели")) -> None:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1) from e
 
+    # Записать эпизоды
+    for step in result.steps:
+        conn.execute(
+            "INSERT INTO episodes (goal_id, step_type, content, tokens_used) "
+            "VALUES (?, 'observe', ?, ?)",
+            (goal_id, f"step_{step.iteration}: {step.thought[:500]}", 0),
+        )
     conn.execute(
         "INSERT INTO episodes (goal_id, step_type, content, tokens_used) "
         "VALUES (?, 'observe', ?, ?)",
-        (goal_id, response.content, response.tokens_used),
+        (goal_id, result.final_content[:5000], result.total_tokens),
     )
+
+    status = "done" if not result.final_content.startswith("[Reached") else "failed"
     conn.execute(
-        "UPDATE goals SET status='done', result=?, updated_at=CURRENT_TIMESTAMP, "
+        "UPDATE goals SET status=?, result=?, updated_at=CURRENT_TIMESTAMP, "
         "finished_at=CURRENT_TIMESTAMP WHERE id=?",
-        (response.content, goal_id),
+        (status, result.final_content, goal_id),
     )
     conn.commit()
     conn.close()
 
-    log.info("goal_done", extra={"goal_id": goal_id, "tokens": response.tokens_used})
-    typer.echo(response.content)
+    log.info(
+        "goal_done",
+        extra={
+            "goal_id": goal_id,
+            "iterations": result.iterations,
+            "tokens": result.total_tokens,
+        },
+    )
+    typer.echo(result.final_content)
 
 
 @app.command()
@@ -187,7 +206,6 @@ def logs(
                 typer.echo(line.rstrip())
         return
 
-    # Follow mode
     with log_file.open("r", encoding="utf-8") as f:
         existing = f.readlines()[-lines:]
         for line in existing:
