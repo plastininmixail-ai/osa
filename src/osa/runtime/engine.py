@@ -208,6 +208,20 @@ class GoalEngine:
         # Все задачи выполнены
         self._update_goal_status(goal_id, "done")
         self.log.info("engine_goal_done", extra={"goal_id": goal_id})
+
+        # M1c: анализ эпизодов — извлечение skills и reflection
+        try:
+            from osa.runtime.skill_detector import detect_skills_for_goal
+            from osa.runtime.reflection import reflect_on_goal
+
+            detect_skills_for_goal(goal_id)
+            reflect_on_goal(goal_id)
+        except Exception as e:  # noqa: BLE001
+            self.log.warning(
+                "post_goal_analysis_failed",
+                extra={"goal_id": goal_id, "error": str(e)},
+            )
+
         return GoalResult(goal_id=goal_id, status="done", plan=plan)
 
     @staticmethod

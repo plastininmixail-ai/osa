@@ -349,3 +349,80 @@ def serve(
     else:
         typer.echo(f"Неизвестный transport: {transport!r}. Поддерживается: telegram")
         raise typer.Exit(1)
+
+
+@app.command()
+def skills(
+    show_id: int | None = typer.Option(None, "--show", "-s", help="Показать детали skill по ID"),
+    status_filter: str | None = typer.Option(
+        None, "--status", help="Фильтр по статусу: experimental | promoted | deprecated"
+    ),
+    limit: int = typer.Option(20, "-n", help="Максимум записей"),
+) -> None:
+    """Показать извлечённые skills (навыки)."""
+    from osa.runtime.skills import SkillLibrary
+
+    if show_id is not None:
+        skill = SkillLibrary.get(show_id)
+        if not skill:
+            typer.echo(f"Skill #{show_id} не найден")
+            raise typer.Exit(1)
+        typer.echo(f"#{skill.id} **{skill.name}** [{skill.status}]")
+        typer.echo(f"  {skill.description}")
+        if skill.trigger:
+            typer.echo(f"  When: {skill.trigger}")
+        if skill.steps:
+            typer.echo("  Steps:")
+            for i, s in enumerate(skill.steps, 1):
+                typer.echo(f"    {i}. {s.tool}({s.args})")
+        typer.echo(f"\n  Success: {skill.success_count}, Fail: {skill.fail_count}")
+        typer.echo(f"  Source goal: #{skill.source_goal_id}")
+        return
+
+    items = SkillLibrary.list_all(status=status_filter, limit=limit)
+    if not items:
+        typer.echo("Skills пока нет. Запустите goal чтобы они появились автоматически.")
+        return
+
+    typer.echo(f"📚 Skills ({len(items)}):\n")
+    for s in items:
+        status_emoji = {"experimental": "🧪", "promoted": "✅", "deprecated": "⛔"}.get(
+            s.status, "·"
+        )
+        typer.echo(f"{status_emoji} #{s.id} **{s.name}** — {s.description[:80]}")
+    typer.echo(f"\nПоказать детали: osa skills --show <id>")
+
+
+@app.command()
+def reflections(
+    goal_id: int | None = typer.Option(None, "--goal", "-g", help="Reflection для конкретного goal"),
+    limit: int = typer.Option(10, "-n", help="Максимум записей"),
+) -> None:
+    """Показать reflection (анализ прошлых задач)."""
+    from osa.db import connect
+
+    conn = connect()
+    try:
+        if goal_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM reflections WHERE goal_id = ? ORDER BY id DESC",
+                (goal_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM reflections ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        typer.echo("Reflections пока нет.")
+        return
+
+    typer.echo(f"💡 Reflections ({len(rows)}):\n")
+    for r in rows:
+        typer.echo(f"--- Reflection #{r['id']} (goal #{r['goal_id']}) ---")
+        typer.echo(r["analysis"])
+        if r["suggestion"]:
+            typer.echo(f"\n💡 Suggestion: {r['suggestion']}")
+        typer.echo("")

@@ -33,6 +33,8 @@ SYSTEM_PROMPT = """Ты — Урс, автономный агент операц
 4. Если инструмент вернул ошибку — попробуй другой подход.
 5. Если задача нерешаема с доступными инструментами — скажи честно.
 6. Отвечай на русском. Кратко и по делу.
+
+{available_skills}
 """
 
 
@@ -67,6 +69,28 @@ class ReactResult:
     iterations: int = 0
 
 
+def _load_available_skills() -> str:
+    """Загрузить список skills из БД и отформатировать для system prompt."""
+    from osa.runtime.skills import SkillLibrary
+
+    try:
+        skills = SkillLibrary.list_all(limit=20)
+    except Exception:  # noqa: BLE001
+        return ""
+
+    if not skills:
+        return ""
+
+    lines = ["\nДоступные навыки (skills) — записанные паттерны успешных действий:"]
+    for skill in skills[:10]:  # лимит чтобы не раздувать промпт
+        lines.append(skill.to_prompt_text())
+    return "\n".join(lines)
+
+
+def _system_prompt() -> str:
+    return SYSTEM_PROMPT.format(available_skills=_load_available_skills())
+
+
 class ReactLoop:
     """Цикл think-act-observe с native tool calling."""
 
@@ -84,7 +108,7 @@ class ReactLoop:
     def run(self, goal_text: str) -> ReactResult:
         """Прогнать цикл до финального ответа или max_iterations."""
         messages: list[LLMMessage] = [
-            LLMMessage(role="system", content=SYSTEM_PROMPT),
+            LLMMessage(role="system", content=_system_prompt()),
             LLMMessage(role="user", content=goal_text),
         ]
         tool_specs = [self._tool_to_spec(t) for t in self.tools]
