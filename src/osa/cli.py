@@ -89,12 +89,16 @@ def goal(
     auto_approve: bool = typer.Option(
         False, "--yes", "-y", help="Автоматически подтверждать опасные инструменты"
     ),
+    plan: bool = typer.Option(
+        True, "--plan/--no-plan", help="Декомпозировать цель на подзадачи"
+    ),
 ) -> None:
     """Поставить цель агенту (синхронно, ждёт первый ответ)."""
     from osa.config import load_config
     from osa.db import connect, get_provider_for_goal
     from osa.logging_setup import configure_logging, get_logger
-    from osa.runtime.react import ReactConfig, ReactLoop
+    from osa.runtime.engine import GoalEngine, run_goal
+    from osa.runtime.react import ReactConfig
     from osa.tools import builtin as builtin_tools
     from osa.tools import registry as tool_registry
 
@@ -104,16 +108,38 @@ def goal(
         json_logs=config.logging.json_logs,
     )
     log = get_logger("osa.cli")
+    react_config = ReactConfig(auto_approve=auto_approve)
 
-    # Зарегистрировать встроенные инструменты
-    tool_registry.reset()
-    builtin_tools.register_all()
-
-    provider = get_provider_for_goal(config)
     log.info(
         "goal_started",
-        extra={"text": text, "provider": config.llm.provider, "auto_approve": auto_approve},
+        extra={
+            "text": text,
+            "provider": config.llm.provider,
+            "auto_approve": auto_approve,
+            "use_planner": plan,
+        },
     )
+
+    if plan:
+        # Декомпозиция через GoalEngine
+        try:
+            result = run_goal(text, react_config)
+        except Exception as e:
+            log.error("goal_failed", extra={"error": str(e)}, exc_info=True)
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1) from e
+
+        typer.echo(result.plan_text_summary())
+        typer.echo(f"\nСтатус: {result.status}")
+        if result.failed_task:
+            typer.echo(f"Провалена задача: {result.failed_task.description[:80]}")
+            typer.echo(f"Причина: {result.failure_reason}")
+        return
+
+    # Старый путь — без декомпозиции, прямой ReAct loop
+    tool_registry.reset()
+    builtin_tools.register_all()
+    provider = get_provider_for_goal(config)
 
     conn = connect()
     cur = conn.execute(
@@ -124,10 +150,12 @@ def goal(
     conn.commit()
 
     try:
+        from osa.runtime.react import ReactLoop
+
         loop = ReactLoop(
             provider=provider,
             tools=tool_registry.all_tools(),
-            config=ReactConfig(auto_approve=auto_approve),
+            config=react_config,
         )
         result = loop.run(text)
     except Exception as e:
@@ -142,13 +170,11 @@ def goal(
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1) from e
 
-    # Записать эпизоды
-    for step in result.steps:
-        conn.execute(
-            "INSERT INTO episodes (goal_id, step_type, content, tokens_used) "
-            "VALUES (?, 'observe', ?, ?)",
-            (goal_id, f"step_{step.iteration}: {step.thought[:500]}", 0),
-        )
+    conn.execute(
+        "INSERT INTO episodes (goal_id, step_type, content, tokens_used) "
+        "VALUES (?, 'observe', ?, ?)",
+        (goal_id, f"step_{1}: {result.steps[0].thought[:500] if result.steps else ''}", 0),
+    )
     conn.execute(
         "INSERT INTO episodes (goal_id, step_type, content, tokens_used) "
         "VALUES (?, 'observe', ?, ?)",

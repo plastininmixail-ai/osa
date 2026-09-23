@@ -40,27 +40,27 @@ def test_init_creates_osa_home_structure(tmp_osa_home) -> None:
 
 
 def test_goal_with_stub_writes_to_db(tmp_osa_home) -> None:
-    """osa goal со stub пишет goal + episode в БД."""
+    """osa goal со stub создаёт goal и tasks в БД (через GoalEngine)."""
     runner.invoke(app, ["init"])
 
     result = runner.invoke(app, ["goal", "привет"])
     assert result.exit_code == 0
-    assert "Привет от stub" in result.stdout
+    # Новый вывод: plan summary + статус
+    assert "Цель: привет" in result.stdout
+    assert "Статус: done" in result.stdout
 
     # Проверка БД
-    import sqlite3
+    from osa.db import connect
 
-    conn = sqlite3.connect(tmp_osa_home / "osa.db")
-    conn.row_factory = sqlite3.Row
+    conn = connect()
     goals = conn.execute("SELECT * FROM goals").fetchall()
     assert len(goals) == 1
     assert goals[0]["description"] == "привет"
     assert goals[0]["status"] == "done"
-    assert "Привет от stub" in goals[0]["result"]
 
-    episodes = conn.execute("SELECT * FROM episodes").fetchall()
-    assert len(episodes) >= 1
-    assert "Привет от stub" in episodes[-1]["content"]
+    tasks = conn.execute("SELECT * FROM tasks WHERE goal_id=?", (goals[0]["id"],)).fetchall()
+    assert len(tasks) >= 1
+    assert all(t["status"] == "done" for t in tasks)
     conn.close()
 
 
