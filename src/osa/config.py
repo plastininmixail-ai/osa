@@ -33,11 +33,21 @@ class LoggingConfig(BaseModel):
     json_logs: bool = True
 
 
+class TelegramConfig(BaseModel):
+    """Параметры Telegram-бота."""
+
+    bot_token: str | None = None
+    allowed_users: list[int] = Field(default_factory=list)
+    poll_timeout: float = 30.0
+    auto_approve: bool = False  # авто-одобрение shell-команд в боте
+
+
 class OSAConfig(BaseModel):
     """Корневой конфиг OSA."""
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
 
 
 def load_config(path: Path | None = None) -> OSAConfig:
@@ -60,6 +70,8 @@ def load_config(path: Path | None = None) -> OSAConfig:
             config_dict["llm"] = dict(data["llm"])  # type: ignore[arg-type]
         if "logging" in data:
             config_dict["logging"] = dict(data["logging"])  # type: ignore[arg-type]
+        if "telegram" in data:
+            config_dict["telegram"] = dict(data["telegram"])  # type: ignore[arg-type]
         config = OSAConfig(**config_dict)
     else:
         config = OSAConfig()
@@ -74,6 +86,19 @@ def load_config(path: Path | None = None) -> OSAConfig:
     base_url_env = os.environ.get("OSA_LLM__BASE_URL")
     if base_url_env:
         config.llm.base_url = base_url_env
+
+    # Telegram env overrides
+    tg_token = os.environ.get("OSA_TELEGRAM__BOT_TOKEN")
+    if tg_token:
+        config.telegram.bot_token = tg_token
+    tg_users = os.environ.get("OSA_TELEGRAM__ALLOWED_USERS")
+    if tg_users:
+        try:
+            config.telegram.allowed_users = [
+                int(x.strip()) for x in tg_users.split(",") if x.strip()
+            ]
+        except ValueError:
+            pass
 
     return config
 

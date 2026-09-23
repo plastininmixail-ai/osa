@@ -327,3 +327,25 @@ def logs(
                     typer.echo(line.rstrip())
             else:
                 time.sleep(0.5)
+
+
+@app.command()
+def serve(
+    transport: str = typer.Option("telegram", "--transport", "-t", help="Тип транспорта: telegram"),
+) -> None:
+    """Запустить сервер для внешних клиентов (Telegram бот и т.д.)."""
+    from osa.config import load_config
+    from osa.logging_setup import configure_logging
+
+    config = load_config()
+    configure_logging(
+        level=config.logging.level,
+        json_logs=config.logging.json_logs,
+    )
+
+    if transport == "telegram":
+        from osa.transports.telegram import run_telegram_bot
+        run_telegram_bot(config)
+    else:
+        typer.echo(f"Неизвестный transport: {transport!r}. Поддерживается: telegram")
+        raise typer.Exit(1)
