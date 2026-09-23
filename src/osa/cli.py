@@ -426,3 +426,91 @@ def reflections(
         if r["suggestion"]:
             typer.echo(f"\n💡 Suggestion: {r['suggestion']}")
         typer.echo("")
+
+
+@app.command()
+def benchmark(
+    goal_id: str | None = typer.Option(None, "--goal", "-g", help="Запустить только эту цель"),
+    attempts: int = typer.Option(1, "-n", help="Попыток на каждую цель"),
+    list_only: bool = typer.Option(False, "--list", "-l", help="Только показать список целей"),
+    auto_approve: bool = typer.Option(True, "--yes/--no-yes", help="Авто-одобрение shell"),
+) -> None:
+    """Запустить бенчмарк на эталонных целях.
+
+    Бенчмарк запускает каждую цель attempts раз и собирает метрики:
+    success rate, время, токены. Используется для проверки формулы
+    'маленькая модель + scaffolding > голая модель'.
+    """
+    from osa.config import load_config
+    from osa.db import get_provider_for_goal
+    from osa.logging_setup import configure_logging
+    from osa.runtime.benchmark import BENCHMARK_GOALS, run_benchmark
+
+    if list_only:
+        typer.echo("📊 Эталонные цели для бенчмарка:\n")
+        for goal in BENCHMARK_GOALS:
+            typer.echo(f"• {goal.id}")
+            typer.echo(f"  {goal.description[:120]}...")
+            typer.echo(f"  Expected: {', '.join(goal.expected_files)}")
+            typer.echo()
+        return
+
+    config = load_config()
+    configure_logging(
+        level=config.logging.level,
+        json_logs=config.logging.json_logs,
+    )
+    provider = get_provider_for_goal(config)
+
+    goals = BENCHMARK_GOALS
+    if goal_id:
+        goals = [g for g in goals if g.id == goal_id]
+        if not goals:
+            typer.echo(f"Цель {goal_id!r} не найдена")
+            raise typer.Exit(1)
+
+    typer.echo(f"🏃 Запускаю бенчмарк: {len(goals)} целей × {attempts} попыток")
+    typer.echo(f"Провайдер: {config.llm.provider}\n")
+
+    report = run_benchmark(goals, provider, attempts_per_goal=attempts)
+
+    typer.echo("\n" + report.format_text())
+
+
+@app.command()
+def baseline(
+    goal_id: str | None = typer.Option(None, "--goal", "-g", help="Запустить только эту цель"),
+) -> None:
+    """Baseline: голая модель без инструментов и scaffolding.
+
+    Используется для сравнения с `osa benchmark` — доказательство
+    что фреймворк добавляет ценность.
+    """
+    from osa.config import load_config
+    from osa.db import get_provider_for_goal
+    from osa.logging_setup import configure_logging
+    from osa.runtime.benchmark import BENCHMARK_GOALS, run_baseline_one_shot
+
+    config = load_config()
+    configure_logging(
+        level=config.logging.level,
+        json_logs=config.logging.json_logs,
+    )
+    provider = get_provider_for_goal(config)
+
+    goals = BENCHMARK_GOALS
+    if goal_id:
+        goals = [g for g in goals if g.id == goal_id]
+        if not goals:
+            typer.echo(f"Цель {goal_id!r} не найдена")
+            raise typer.Exit(1)
+
+    typer.echo(f"📊 Baseline (голая модель, {len(goals)} целей)\n")
+
+    for goal in goals:
+        typer.echo(f"--- {goal.id} ---")
+        typer.echo(f"Goal: {goal.description[:100]}...")
+        response, tokens = run_baseline_one_shot(provider, goal.description)
+        typer.echo(f"Tokens: {tokens}")
+        typer.echo(f"Response (первые 300 chars):\n{response[:300]}")
+        typer.echo()
