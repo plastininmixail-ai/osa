@@ -64,11 +64,20 @@ class GoalEngine:
     def run(self, goal_text: str, goal_id: int | None = None) -> GoalResult:
         """Выполнить цель: plan → execute tasks.
 
+        Если goal_text выглядит как информационный вопрос (нет явных
+        признаков action: "как", "что", "расскажи", "объясни"), используем
+        fast path — один запрос к LLM без tools и планирования.
+
         Args:
             goal_text: текст цели
             goal_id: если задан, использовать существующую запись goal в БД
                      (для возобновления). Если None — создать новую.
         """
+        # Fast path: информационные вопросы без action verbs
+        if self._is_informational(goal_text):
+            return self._run_fast_path(goal_text)
+
+        # Full path: Goal Engine с планированием и tools
         # 1. Goal в БД
         if goal_id is None:
             goal_id = self._create_goal(goal_text)
@@ -86,6 +95,86 @@ class GoalEngine:
 
         # 4. Выполнение
         return self._execute_plan(goal_id, plan)
+
+    @staticmethod
+    def _is_informational(text: str) -> bool:
+        """Определяет, является ли запрос информационным (без необходимости tools).
+
+        Эвристика: если в тексте нет action-глаголов (создай, прочитай, найди,
+        установи) и есть вопросительные слова/маркеры — fast path.
+        """
+        lower = text.lower().strip()
+        action_keywords = [
+            "создай", "сделай", "напиши", "удали", "измени", "переименуй",
+            "прочитай", "найди", "установи", "запусти", "проверь", "открой",
+            "покажи какие", "выведи", "посчитай", "удали", "скопируй",
+            "перемести", "создай в", "проверь что",
+        ]
+        if any(kw in lower for kw in action_keywords):
+            return False
+        # Маркеры вопроса
+        question_markers = [
+            "как устроен", "что такое", "расскажи", "объясни",
+            "почему", "зачем", "как работает", "какая разница",
+            "что делает", "что может", "какие есть", "что ты",
+        ]
+        if any(qm in lower for qm in question_markers):
+            return True
+        # Знак вопроса в конце
+        if lower.endswith("?"):
+            return True
+        return False
+
+    def _run_fast_path(self, goal_text: str) -> GoalResult:
+        """Быстрый путь для информационных вопросов: один запрос к LLM.
+
+        Без планировщика, без tools, без decomposition. Просто ответ.
+        """
+        from osa.llm.base import LLMMessage
+
+        goal_id = self._create_goal(goal_text)
+
+        messages = [
+            LLMMessage(
+                role="system",
+                content=(
+                    "Ты — Урс, автономный агент O.S.A. "
+                    "Отвечай на русском, кратко и по делу."
+                ),
+            ),
+            LLMMessage(role="user", content=goal_text),
+        ]
+        response = self.provider.complete(messages, temperature=0.5, max_tokens=2000)
+
+        # Сохраняем в БД
+        conn = connect()
+        conn.execute(
+            "INSERT INTO episodes (goal_id, step_type, content, tokens_used) "
+            "VALUES (?, 'observe', ?, ?)",
+            (goal_id, response.content[:5000], response.tokens_used),
+        )
+        conn.execute(
+            "UPDATE goals SET status='done', result=?, updated_at=CURRENT_TIMESTAMP, "
+            "finished_at=CURRENT_TIMESTAMP WHERE id=?",
+            (response.content, goal_id),
+        )
+        conn.commit()
+        conn.close()
+
+        # Plan с одной "задачей" для красивого вывода
+        plan = Plan(goal_text=goal_text, tasks=[
+            Task(description=goal_text, rationale="Информационный вопрос"),
+        ])
+        # Помечаем как done
+        plan.tasks[0].status = "done"
+        plan.tasks[0].result = response.content
+        plan.tasks[0].attempts = 1
+
+        self.log.info(
+            "engine_fast_path_done",
+            extra={"goal_id": goal_id, "tokens": response.tokens_used},
+        )
+        return GoalResult(goal_id=goal_id, status="done", plan=plan)
 
     def resume(self, goal_id: int) -> GoalResult | None:
         """Возобновить незавершённую цель.

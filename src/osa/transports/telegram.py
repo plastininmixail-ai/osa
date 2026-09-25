@@ -164,14 +164,33 @@ class TelegramBot:
             react_config = ReactConfig(auto_approve=self.config.telegram.auto_approve)
             result = run_goal(goal_text, react_config)
 
-            summary = result.plan_text_summary()
-            status_line = f"\n\n*Статус:* {'✅ done' if result.status == 'done' else '❌ failed'}"
+            # Формируем ответ: сначала финальный текст ответа (из последней задачи),
+            # потом краткий статус/план
+            final_answer = ""
+            if result.plan.tasks:
+                # Берём result последней done-task (или failed)
+                for task in reversed(result.plan.tasks):
+                    if task.status == "done" and task.result:
+                        final_answer = task.result
+                        break
+                if not final_answer and result.plan.tasks[-1].result:
+                    final_answer = result.plan.tasks[-1].result
+
+            status_line = (
+                f"\n\n——\n📊 *Статус:* {'✅ done' if result.status == 'done' else '❌ failed'}"
+                f" · {len(result.plan.tasks)} шагов"
+            )
             if result.failed_task:
                 status_line += f"\n*Провалена:* {result.failed_task.description[:80]}"
                 status_line += f"\n*Причина:* {result.failure_reason}"
 
-            # Telegram имеет лимит 4096 символов на сообщение
-            full_response = summary + status_line
+            # Если нет финального ответа (например fast path не дал результат) — fallback на план
+            if not final_answer:
+                full_response = result.plan_text_summary() + status_line
+            else:
+                full_response = final_answer + status_line
+
+            # Telegram лимит 4096 символов на сообщение
             if len(full_response) > 4000:
                 full_response = full_response[:4000] + "\n\n_... (обрезано)_"
 
