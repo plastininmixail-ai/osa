@@ -42,7 +42,7 @@ SYSTEM_PROMPT = """Ты — Урс, автономный агент операц
 class ReactConfig:
     """Конфигурация ReAct loop."""
 
-    max_iterations: int = 10
+    max_iterations: int = 15  # увеличено с 10 — M3 нужны итерации на сложных задачах
     max_tokens: int = 2000
     temperature: float = 0.7
     auto_approve: bool = False  # True для CI/headless
@@ -114,6 +114,10 @@ class ReactLoop:
         tool_specs = [self._tool_to_spec(t) for t in self.tools]
         steps: list[ReactStep] = []
         total_tokens = 0
+        # Tracking для отладки: какие tools использовались и сколько раз
+        # Помогает при stuck detection в Reflection (M1c).
+        last_tool_signature: str | None = None
+        same_tool_streak = 0
 
         for iteration in range(1, self.config.max_iterations + 1):
             self.log.info(
@@ -129,7 +133,7 @@ class ReactLoop:
             )
             total_tokens += response.tokens_used
 
-            # Если нет tool_calls — это финальный ответ
+            # Если нет tool_calls — финальный ответ
             if not response.tool_calls:
                 step = ReactStep(
                     iteration=iteration,
