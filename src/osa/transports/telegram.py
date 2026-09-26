@@ -181,8 +181,14 @@ class TelegramBot:
 
             full_response = self._format_response(result)
 
-            if len(full_response) > 4000:
-                full_response = full_response[:4000] + "\n\n_... (обрезано)_"
+            # Умная обрезка если превышает Telegram лимит (4096)
+            full_response, was_truncated = self._smart_truncate(full_response, max_len=4000)
+
+            if was_truncated:
+                self.log.info(
+                    "telegram_response_truncated",
+                    extra={"original_len": len(self._format_response(result))},
+                )
 
             # Telegram Markdown парсер ломается на неэкранированных _ * [
             # если они не образуют пары. Безопаснее отправлять plain text —
@@ -212,7 +218,11 @@ class TelegramBot:
 
     @staticmethod
     def _format_response(result) -> str:
-        """Форматирует ответ для Telegram."""
+        """Форматирует ответ для Telegram.
+
+        Длинные ответы обрезаются по границе секции (\\n\\n) с предупреждением.
+        Полный текст всегда доступен через `osa logs` или экспорт цели.
+        """
         # Финальный текст ответа из последней done-task
         final_answer = ""
         if result.plan.tasks:
@@ -233,7 +243,40 @@ class TelegramBot:
 
         if not final_answer:
             return result.plan_text_summary() + status_line
+
         return final_answer + status_line
+
+    @staticmethod
+    def _smart_truncate(text: str, max_len: int = 4000) -> tuple[str, bool]:
+        """Умная обрезка текста по границе секции.
+
+        Returns:
+            (truncated_text, was_truncated)
+        """
+        if len(text) <= max_len:
+            return text, False
+
+        # Резервируем место для пометки об обрезке
+        marker = f"\n\n_... (обрезано, показано {max_len}/{len(text)} символов. Полный текст в `osa logs` или БД)_"
+        budget = max_len - len(marker)
+
+        if budget < 100:
+            return text[:max_len] + marker, True
+
+        truncated = text[:budget]
+
+        # Пытаемся обрезать по последней границе секции (\n\n) в пределах budget
+        last_section_break = truncated.rfind("\n\n")
+        if last_section_break > budget * 0.7:  # Если нашли разумную границу
+            truncated = truncated[:last_section_break]
+
+        # Если всё ещё не влезает — режем по последнему пробелу
+        elif " " in truncated:
+            last_space = truncated.rfind(" ")
+            if last_space > budget * 0.8:
+                truncated = truncated[:last_space]
+
+        return truncated + marker, True
 
     def run(self) -> None:
         """Запустить бота (blocking)."""
