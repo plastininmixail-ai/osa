@@ -78,6 +78,9 @@ class TelegramBot:
         self.token = config.telegram.bot_token
         self.allowed_users = set(config.telegram.allowed_users)
         self.log = get_logger("osa.telegram")
+        # Логгер переписки: каждое сообщение user+agent дописывается в chat_log.txt
+        from osa.runtime.chat_logger import ChatLogger
+        self.chat_logger = ChatLogger()
 
     def _is_allowed(self, user_id: int) -> bool:
         """Проверить whitelist. Если allowed_users пуст — разрешить всем (dev-режим)."""
@@ -205,6 +208,21 @@ class TelegramBot:
                 )
                 # Fallback: отправляем как plain text
                 await placeholder.edit_text(full_response)
+
+            # Логируем переписку в chat_log.txt
+            try:
+                self.chat_logger.log_exchange(
+                    goal_text,
+                    full_response,
+                    goal_id=result.goal_id,
+                    status=result.status,
+                )
+            except Exception as log_err:
+                self.log.warning(
+                    "chat_log_write_failed",
+                    extra={"error": str(log_err)[:200]},
+                )
+
         except Exception as e:
             self.log.exception("telegram_goal_failed", extra={"error": str(e)})
             try:
@@ -215,6 +233,13 @@ class TelegramBot:
                 await placeholder.reply_text(
                     f"❌ Ошибка при выполнении:\n\n{str(e)[:3000]}",
                 )
+
+            # Логируем даже при ошибке
+            try:
+                self.chat_logger.log_user(goal_text, user_id=user_id)
+                self.chat_logger.log_agent(f"ERROR: {str(e)[:1000]}", user_id=user_id)
+            except Exception:
+                pass
 
     @staticmethod
     def _format_response(result) -> str:

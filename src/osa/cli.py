@@ -478,6 +478,40 @@ def benchmark(
 
 
 @app.command()
+def chatlog(
+    lines: int = typer.Option(50, "-n", "--lines", help="Количество последних строк"),
+    clear: bool = typer.Option(False, "--clear", help="Очистить лог (осторожно)"),
+    path: Path | None = typer.Option(None, "--path", help="Путь к файлу лога"),
+) -> None:
+    """Показать историю переписки (chat_log.txt)."""
+    from osa.runtime.chat_logger import ChatLogger
+
+    if path is None:
+        path = None  # ChatLogger возьмёт default
+
+    logger = ChatLogger(log_path=path)
+
+    if clear:
+        typer.confirm(
+            f"Точно очистить {logger.log_path}?", abort=True
+        )
+        logger.clear()
+        typer.echo(f"✅ Очищено: {logger.log_path}")
+        return
+
+    if not logger.log_path.exists():
+        typer.echo(f"📭 Лог ещё не создан: {logger.log_path}")
+        typer.echo("Отправь боту любое сообщение — лог начнёт заполняться.")
+        return
+
+    content = logger.read()
+    all_lines = content.splitlines()
+    last_lines = all_lines[-lines:] if lines > 0 else all_lines
+    typer.echo(f"💬 Последние {len(last_lines)} строк из {logger.log_path}:\n")
+    typer.echo("\n".join(last_lines))
+
+
+@app.command()
 def baseline(
     goal_id: str | None = typer.Option(None, "--goal", "-g", help="Запустить только эту цель"),
 ) -> None:
