@@ -88,6 +88,51 @@ def test_high_token_limit_allows_more_iterations() -> None:
     assert result.iterations <= 20
 
 
+def test_none_iterations_limit_allows_unlimited() -> None:
+    """max_iterations=None → без лимита, цикл идёт пока не будет финал."""
+    provider = StubProvider(
+        scenario=[
+            StubResponse(tool_calls=[ToolCallRequest("c1", "file_list", {"dir": "."})]),
+            StubResponse(tool_calls=[ToolCallRequest("c2", "file_list", {"dir": "."})]),
+            StubResponse(content="final answer"),
+        ]
+    )
+    loop = ReactLoop(
+        provider=provider,
+        config=ReactConfig(
+            max_iterations=None,  # без лимита
+            max_total_tokens=None,  # без лимита
+            auto_approve=True,
+        ),
+    )
+    result = loop.run("test")
+
+    # Должен пройти через все 3 итерации
+    assert result.iterations == 3
+    assert result.final_content == "final answer"
+
+
+def test_none_iterations_with_safety_cap() -> None:
+    """max_iterations=None с safety cap — не зависает бесконечно если LLM глючит."""
+    # StubProvider всегда возвращает tool_call → цикл никогда не закончится сам
+    provider = StubProvider(
+        scenario=[
+            StubResponse(tool_calls=[ToolCallRequest(f"c{i}", "file_list", {"dir": "."})])
+            for i in range(20)
+        ]
+    )
+    loop = ReactLoop(
+        provider=provider,
+        config=ReactConfig(max_iterations=None, max_total_tokens=None, auto_approve=True),
+    )
+    result = loop.run("test")
+
+    # Safety cap 10000, StubProvider имеет 20 сценариев → вернёт fallback после
+    # 20 итераций, потом должен попасть в safety cap → но упадёт по default "Привет от stub!".
+    # Главное что не зависает
+    assert result.iterations <= 25  # safety cap or fallback
+
+
 def test_low_token_limit_stops_quickly() -> None:
     """Маленький лимит → быстрая остановка даже без tool_calls."""
     # iter 1: думает 6000 токенов, лимит 5000

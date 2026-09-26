@@ -42,13 +42,13 @@ SYSTEM_PROMPT = """Ты — Урс, автономный агент операц
 class ReactConfig:
     """Конфигурация ReAct loop.
 
-    max_iterations: жёсткий лимит итераций (защита от зацикливания)
-    max_total_tokens: лимит суммарных токенов на задачу (защита от трат)
+    max_iterations: жёсткий лимит итераций (None = без лимита)
+    max_total_tokens: лимит суммарных токенов на задачу (None = без лимита)
     max_tokens: лимит токенов на один LLM-вызов
     """
 
-    max_iterations: int = 15
-    max_total_tokens: int = 50000  # 50K токенов на задачу — достаточно для сложных
+    max_iterations: int | None = 20  # None чтобы отключить лимит итераций
+    max_total_tokens: int | None = None  # None чтобы отключить лимит токенов
     max_tokens: int = 2000  # лимит на один вызов
     temperature: float = 0.7
     auto_approve: bool = False  # True для CI/headless
@@ -120,12 +120,23 @@ class ReactLoop:
         tool_specs = [self._tool_to_spec(t) for t in self.tools]
         steps: list[ReactStep] = []
         total_tokens = 0
-        # Tracking для отладки: какие tools использовались и сколько раз
-        # Помогает при stuck detection в Reflection (M1c).
         last_tool_signature: str | None = None
         same_tool_streak = 0
 
-        for iteration in range(1, self.config.max_iterations + 1):
+        # Если max_iterations is None — без лимита, используем safety cap
+        # (очень большой) чтобы цикл не зависал бесконечно.
+        max_iter = self.config.max_iterations if self.config.max_iterations is not None else 10_000
+
+        iteration = 0
+        while True:
+            iteration += 1
+            if iteration > max_iter:
+                # Достигли лимита (или safety cap при None)
+                self.log.warning(
+                    "react_max_iterations",
+                    extra={"max": max_iter, "is_unlimited": self.config.max_iterations is None},
+                )
+                break
             self.log.info(
                 "react_iteration",
                 extra={"iteration": iteration, "messages": len(messages)},
@@ -139,10 +150,11 @@ class ReactLoop:
             )
             total_tokens += response.tokens_used
 
-            # Лимит токенов: проверяем ПОСЛЕ каждого вызова, даже перед tool_calls.
-            # Это защищает от runaway — модель может бесконечно думать без action,
-            # и каждый thinking тратит токены без прогресса.
-            if total_tokens >= self.config.max_total_tokens:
+            # Лимит токенов: если None — без лимита. Если задан — проверяем.
+            if (
+                self.config.max_total_tokens is not None
+                and total_tokens >= self.config.max_total_tokens
+            ):
                 self.log.warning(
                     "react_token_limit",
                     extra={
@@ -214,16 +226,19 @@ class ReactLoop:
 
             steps.append(step)
 
-        # Достигли max_iterations
+        # Достигли max_iterations (или safety cap при None)
         self.log.warning(
             "react_max_iterations",
-            extra={"max": self.config.max_iterations},
+            extra={
+                "max": max_iter,
+                "is_unlimited": self.config.max_iterations is None,
+            },
         )
         return ReactResult(
             final_content="[Reached max iterations without final answer]",
             steps=steps,
             total_tokens=total_tokens,
-            iterations=self.config.max_iterations,
+            iterations=max_iter,
         )
 
     def _execute_tool(self, tc: ToolCallRequest) -> ToolResult:
