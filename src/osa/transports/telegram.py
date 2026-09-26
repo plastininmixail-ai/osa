@@ -184,16 +184,31 @@ class TelegramBot:
             if len(full_response) > 4000:
                 full_response = full_response[:4000] + "\n\n_... (обрезано)_"
 
-            await placeholder.edit_text(
-                full_response,
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            # Telegram Markdown парсер ломается на неэкранированных _ * [
+            # если они не образуют пары. Безопаснее отправлять plain text —
+            # теряется только жирный шрифт в шапке.
+            try:
+                await placeholder.edit_text(
+                    full_response,
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception as edit_err:
+                self.log.warning(
+                    "telegram_markdown_failed",
+                    extra={"error": str(edit_err)[:200]},
+                )
+                # Fallback: отправляем как plain text
+                await placeholder.edit_text(full_response)
         except Exception as e:
             self.log.exception("telegram_goal_failed", extra={"error": str(e)})
-            await placeholder.edit_text(
-                f"❌ Ошибка при выполнении:\n\n`{str(e)[:3000]}`",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            try:
+                await placeholder.edit_text(
+                    f"❌ Ошибка при выполнении:\n\n{str(e)[:3000]}",
+                )
+            except Exception:
+                await placeholder.reply_text(
+                    f"❌ Ошибка при выполнении:\n\n{str(e)[:3000]}",
+                )
 
     @staticmethod
     def _format_response(result) -> str:
