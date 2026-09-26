@@ -134,9 +134,41 @@ class MinimaxClient(LLMProvider):
             payload["tools"] = [_tool_spec_to_dict(t) for t in tools]
             payload["tool_choice"] = "auto"
 
-        with httpx.Client(timeout=self.config.timeout) as client:
-            response = client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+        # Retry с exponential backoff для transient ошибок (SSL handshake,
+        # connection timeout, 5xx).
+        import time
 
-        return _parse_response(data)
+        last_error: Exception | None = None
+        max_attempts = max(1, self.config.max_retries)
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with httpx.Client(timeout=self.config.timeout) as client:
+                    response = client.post(url, json=payload, headers=headers)
+                    response.raise_for_status()
+                    data = response.json()
+                return _parse_response(data)
+            except (
+                httpx.TimeoutException,
+                httpx.ConnectError,
+                httpx.RemoteProtocolError,
+                httpx.NetworkError,
+            ) as e:
+                last_error = e
+                if attempt < max_attempts:
+                    # Exponential backoff: 1s, 2s, 4s
+                    wait = 2 ** (attempt - 1)
+                    time.sleep(wait)
+                    continue
+                raise
+            except httpx.HTTPStatusError as e:
+                # 5xx — retry, 4xx — fail immediately
+                if 500 <= e.response.status_code < 600 and attempt < max_attempts:
+                    last_error = e
+                    wait = 2 ** (attempt - 1)
+                    time.sleep(wait)
+                    continue
+                raise
+
+        # Не должны сюда дойти, но на всякий случай:
+        raise last_error if last_error else RuntimeError("MinimaxClient: unknown error")
