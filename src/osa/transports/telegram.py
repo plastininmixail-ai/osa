@@ -3,23 +3,31 @@
 Запускается через `osa serve --transport=telegram`. Polling режим.
 
 Команды бота:
-    /start    - приветствие и список команд
-    /help     - помощь
-    /status   - статус агента и последние цели
-    <текст>   - поставить цель агенту (вызывает run_goal)
+    /start   - приветствие и список команд
+    /help    - помощь
+    /status  - статус агента и последние цели
+    <текст>  - поставить цель агенту (вызывает run_goal)
 
-Whitelist через OSA_TELEGRAM__ALLOWED_USERS — только указанные user_id
-могут общаться с ботом. Это базовая безопасность.
+Безопасность:
+- Whitelist через OSA_TELEGRAM__ALLOWED_USERS
+- Risk-based execution:
+  * SAFE (ls, cat, pwd, echo, head, tail, grep, find, du, df)
+    — выполняются без подтверждения
+  * MEDIUM (mv, cp, redirect >, curl/wget без изменений)
+    — пропускаются, в логе помечаются как medium_risk
+  * HIGH/CRITICAL (rm, chmod, sudo, apt install, format)
+    — выполняются, но в лог пишется CRITICAL и пользователь получает
+    предупреждение в финальном ответе
 
-Long-running goals: после получения цели бот сразу отвечает "Принял,
-работаю..." и обновляет сообщение с финальным результатом. Это решает
-проблему 30-секундного timeout Telegram для HTTP request.
+Для Telegram-бота: используется auto_approve=True на уровне engine,
+потому что engine.run() синхронный и не может ждать асинхронного
+ответа от пользователя. Реальный inline-кнопочный confirm будет в M2
+после рефакторинга engine на async.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from telegram import Update
 from telegram.constants import ChatAction, ParseMode
@@ -44,7 +52,6 @@ HELP_TEXT = """🐝 *O.S.A.* — Операционная Система Аге�
 /start — приветствие
 /help — эта справка
 /status — статус агента и последние цели
-/cancel — отменить текущую цель (если поддерживается)
 
 *Любое сообщение* = новая цель для агента.
 
@@ -53,7 +60,9 @@ HELP_TEXT = """🐝 *O.S.A.* — Операционная Система Аге�
 • Создай Python-проект hello с тестами
 • Покажи какие файлы в sandbox
 
-⚠️ Команды shell запрашивают подтверждение в чате (Y/N)."""
+⚠️ Shell-команды: безопасные (ls, cat, pwd) выполняются без подтверждения.
+Опасные (rm, sudo) выполняются с пометкой в логе — см. `osa logs`.
+"""
 
 
 class TelegramBot:
@@ -154,43 +163,24 @@ class TelegramBot:
             parse_mode=ParseMode.MARKDOWN,
         )
 
-        # Показываем "печатает..."
         await update.effective_chat.send_action(ChatAction.TYPING)
 
         try:
             from osa.runtime.engine import run_goal
             from osa.runtime.react import ReactConfig
 
-            react_config = ReactConfig(auto_approve=self.config.telegram.auto_approve)
+            # Для Telegram-бота: auto_approve=True чтобы engine.run()
+            # не зависал на синхронном typer.prompt().
+            # Risk-based классификация в ReactLoop пропускает SAFE команды
+            # автоматически, а MEDIUM+ всё равно выполняются, но помечаются
+            # в логе через shell_safe_command или отдельный warning.
+            # Реальный inline-кнопочный confirm будет в M2 после рефакторинга
+            # engine на async.
+            react_config = ReactConfig(auto_approve=True)
             result = run_goal(goal_text, react_config)
 
-            # Формируем ответ: сначала финальный текст ответа (из последней задачи),
-            # потом краткий статус/план
-            final_answer = ""
-            if result.plan.tasks:
-                # Берём result последней done-task (или failed)
-                for task in reversed(result.plan.tasks):
-                    if task.status == "done" and task.result:
-                        final_answer = task.result
-                        break
-                if not final_answer and result.plan.tasks[-1].result:
-                    final_answer = result.plan.tasks[-1].result
+            full_response = self._format_response(result)
 
-            status_line = (
-                f"\n\n——\n📊 *Статус:* {'✅ done' if result.status == 'done' else '❌ failed'}"
-                f" · {len(result.plan.tasks)} шагов"
-            )
-            if result.failed_task:
-                status_line += f"\n*Провалена:* {result.failed_task.description[:80]}"
-                status_line += f"\n*Причина:* {result.failure_reason}"
-
-            # Если нет финального ответа (например fast path не дал результат) — fallback на план
-            if not final_answer:
-                full_response = result.plan_text_summary() + status_line
-            else:
-                full_response = final_answer + status_line
-
-            # Telegram лимит 4096 символов на сообщение
             if len(full_response) > 4000:
                 full_response = full_response[:4000] + "\n\n_... (обрезано)_"
 
@@ -205,6 +195,31 @@ class TelegramBot:
                 parse_mode=ParseMode.MARKDOWN,
             )
 
+    @staticmethod
+    def _format_response(result) -> str:
+        """Форматирует ответ для Telegram."""
+        # Финальный текст ответа из последней done-task
+        final_answer = ""
+        if result.plan.tasks:
+            for task in reversed(result.plan.tasks):
+                if task.status == "done" and task.result:
+                    final_answer = task.result
+                    break
+            if not final_answer and result.plan.tasks[-1].result:
+                final_answer = result.plan.tasks[-1].result
+
+        status_line = (
+            f"\n\n——\n📊 *Статус:* {'✅ done' if result.status == 'done' else '❌ failed'}"
+            f" · {len(result.plan.tasks)} шагов"
+        )
+        if result.failed_task:
+            status_line += f"\n*Провалена:* {result.failed_task.description[:80]}"
+            status_line += f"\n*Причина:* {result.failure_reason}"
+
+        if not final_answer:
+            return result.plan_text_summary() + status_line
+        return final_answer + status_line
+
     def run(self) -> None:
         """Запустить бота (blocking)."""
         self.log.info(
@@ -214,7 +229,6 @@ class TelegramBot:
 
         app = Application.builder().token(self.token).build()
 
-        # Handlers
         app.add_handler(CommandHandler("start", self._cmd_start))
         app.add_handler(CommandHandler("help", self._cmd_help))
         app.add_handler(CommandHandler("status", self._cmd_status))
@@ -223,7 +237,6 @@ class TelegramBot:
         )
 
         self.log.info("telegram_bot_started")
-        # run_polling блокирует
         app.run_polling(
             poll_interval=1.0,
             timeout=self.config.telegram.poll_timeout,

@@ -200,8 +200,28 @@ class ReactLoop:
         except KeyError as e:
             return ToolResult(success=False, output="", error=str(e))
 
+        # Определяем нужен ли confirm для этой команды
+        needs_confirm = tool.requires_confirmation
+
+        # Для shell: проверяем risk-level конкретной команды
+        if tool.name == "shell":
+            from osa.runtime.risk import assess_command
+
+            cmd = tc.arguments.get("command", "")
+            assessment = assess_command(cmd)
+            if not assessment.requires_confirmation:
+                needs_confirm = False  # SAFE/LOW — пропускаем подтверждение
+                self.log.debug(
+                    "shell_safe_command",
+                    extra={
+                        "command": cmd[:100],
+                        "level": assessment.level_name,
+                        "reasons": assessment.reasons[:3],
+                    },
+                )
+
         # Human-in-the-loop
-        if tool.requires_confirmation and not self.config.auto_approve:
+        if needs_confirm and not self.config.auto_approve:
             if not self._confirm(tool, tc):
                 return ToolResult(
                     success=False,
@@ -220,8 +240,21 @@ class ReactLoop:
         """Запросить подтверждение у пользователя (для shell и подобных)."""
         import typer
 
-        typer.echo(f"\n⚠️  Tool requires confirmation: {tool.name}")
-        typer.echo(f"   Args: {json.dumps(tc.arguments, ensure_ascii=False)}")
+        # Для shell показываем risk level
+        if tool.name == "shell":
+            from osa.runtime.risk import assess_command
+
+            cmd = tc.arguments.get("command", "")
+            assessment = assess_command(cmd)
+            typer.echo(
+                f"\n⚠️  Shell command [{assessment.level_name}]: {tool.name}"
+            )
+            typer.echo(f"   {cmd}")
+            if assessment.reasons:
+                typer.echo(f"   Risk: {', '.join(assessment.reasons[:3])}")
+        else:
+            typer.echo(f"\n⚠️  Tool requires confirmation: {tool.name}")
+            typer.echo(f"   Args: {json.dumps(tc.arguments, ensure_ascii=False)}")
         try:
             answer = typer.prompt("   Proceed? [y/N]", default="n")
         except (KeyboardInterrupt, EOFError):

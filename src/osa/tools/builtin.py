@@ -211,7 +211,7 @@ class ShellTool(Tool):
         },
         "required": ["command"],
     }
-    requires_confirmation = True  # shell = потенциально опасно
+    requires_confirmation = True  # по умолчанию, но run() проверяет risk level
 
     def run(self, **params: Any) -> ToolResult:
         cmd = params.get("command", "")
@@ -257,9 +257,27 @@ class ShellTool(Tool):
         return ToolResult(
             success=(proc.returncode == 0),
             output=output,
-            metadata={"returncode": proc.returncode},
+            metadata={"returncode": proc.returncode, "command": cmd[:200]},
             error=None if proc.returncode == 0 else f"Exit code {proc.returncode}",
         )
+
+    @property
+    def risk_assessor(self):  # type: ignore[no-untyped-def]
+        """Lazy import чтобы избежать circular."""
+        from osa.runtime.risk import assess_command
+
+        return assess_command
+
+    def requires_confirmation_for(self, command: str) -> bool:
+        """Проверить, требует ли конкретная команда подтверждения.
+
+        Безопасные read-only команды (ls, cat, pwd, grep) выполняются
+        без подтверждения. Всё остальное — требует.
+        """
+        from osa.runtime.risk import assess_command
+
+        assessment = assess_command(command)
+        return assessment.requires_confirmation
 
 
 def _find_bash() -> str | None:
