@@ -47,8 +47,8 @@ class ReactConfig:
     max_tokens: лимит токенов на один LLM-вызов
     """
 
-    max_iterations: int | None = 20  # None чтобы отключить лимит итераций
-    max_total_tokens: int | None = None  # None чтобы отключить лимит токенов
+    max_iterations: int | None = None  # None = без лимита (по умолчанию)
+    max_total_tokens: int | None = None  # None = без лимита (по умолчанию)
     max_tokens: int = 2000  # лимит на один вызов
     temperature: float = 0.7
     auto_approve: bool = False  # True для CI/headless
