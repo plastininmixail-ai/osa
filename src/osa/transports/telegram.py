@@ -168,6 +168,31 @@ class TelegramBot:
 
         await update.effective_chat.send_action(ChatAction.TYPING)
 
+        # Heartbeat: обновляем placeholder каждые 15 сек, чтобы пользователь видел
+        # что бот не завис. Сложные задачи (особенно с многошаговой декомпозицией)
+        # могут идти 2-5 минут — без heartbeat это выглядит как зависание.
+        import asyncio
+
+        start_ts = asyncio.get_event_loop().time()
+        stop_heartbeat = asyncio.Event()
+
+        async def heartbeat():
+            while not stop_heartbeat.is_set():
+                await asyncio.sleep(15)
+                if stop_heartbeat.is_set():
+                    break
+                try:
+                    elapsed = int(asyncio.get_event_loop().time() - start_ts)
+                    await placeholder.edit_text(
+                        f"⏳ Работаю... {elapsed}s\n\n`{goal_text[:200]}`",
+                    )
+                    await update.effective_chat.send_action(ChatAction.TYPING)
+                except Exception:
+                    # Если edit_text не сработал — просто пропускаем
+                    pass
+
+        heartbeat_task = asyncio.create_task(heartbeat())
+
         try:
             from osa.runtime.engine import run_goal
             from osa.runtime.react import ReactConfig
@@ -223,8 +248,22 @@ class TelegramBot:
                     extra={"error": str(log_err)[:200]},
                 )
 
+            # Останавливаем heartbeat
+            stop_heartbeat.set()
+            try:
+                await asyncio.wait_for(heartbeat_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                heartbeat_task.cancel()
+
         except Exception as e:
             self.log.exception("telegram_goal_failed", extra={"error": str(e)})
+            # Останавливаем heartbeat и в случае ошибки
+            stop_heartbeat.set()
+            try:
+                await asyncio.wait_for(heartbeat_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                heartbeat_task.cancel()
+
             try:
                 await placeholder.edit_text(
                     f"❌ Ошибка при выполнении:\n\n{str(e)[:3000]}",
