@@ -40,10 +40,16 @@ SYSTEM_PROMPT = """Ты — Урс, автономный агент операц
 
 @dataclass
 class ReactConfig:
-    """Конфигурация ReAct loop."""
+    """Конфигурация ReAct loop.
 
-    max_iterations: int = 15  # увеличено с 10 — M3 нужны итерации на сложных задачах
-    max_tokens: int = 2000
+    max_iterations: жёсткий лимит итераций (защита от зацикливания)
+    max_total_tokens: лимит суммарных токенов на задачу (защита от трат)
+    max_tokens: лимит токенов на один LLM-вызов
+    """
+
+    max_iterations: int = 15
+    max_total_tokens: int = 50000  # 50K токенов на задачу — достаточно для сложных
+    max_tokens: int = 2000  # лимит на один вызов
     temperature: float = 0.7
     auto_approve: bool = False  # True для CI/headless
 
@@ -132,6 +138,29 @@ class ReactLoop:
                 tools=tool_specs,
             )
             total_tokens += response.tokens_used
+
+            # Лимит токенов: проверяем ПОСЛЕ каждого вызова, даже перед tool_calls.
+            # Это защищает от runaway — модель может бесконечно думать без action,
+            # и каждый thinking тратит токены без прогресса.
+            if total_tokens >= self.config.max_total_tokens:
+                self.log.warning(
+                    "react_token_limit",
+                    extra={
+                        "iteration": iteration,
+                        "total_tokens": total_tokens,
+                        "limit": self.config.max_total_tokens,
+                    },
+                )
+                return ReactResult(
+                    final_content=(
+                        f"[Reached token limit {total_tokens}/{self.config.max_total_tokens}. "
+                        f"Задача слишком сложная для текущей модели. "
+                        f"Попробуй разбить на подзадачи или использовать более мощную модель.]"
+                    ),
+                    steps=steps,
+                    total_tokens=total_tokens,
+                    iterations=iteration,
+                )
 
             # Если нет tool_calls — финальный ответ
             if not response.tool_calls:
